@@ -1,0 +1,8 @@
+# Local arduino-cli used for building/uploading (not part of the project)
+.tools/
+
+# Build output
+build/
+*.bin
+*.elf
+*.map
