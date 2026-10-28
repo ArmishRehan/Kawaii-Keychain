@@ -1,17 +1,20 @@
 # Kawaii Keychain
 
-A tiny battery-powered keychain with an OLED screen that shows animated kawaii faces. One button switches faces, and holding it opens a menu with a mini runner game, a reaction game and a fortune orb.
+A tiny battery-powered keychain with an OLED screen that shows animated kawaii faces. One button switches faces, and holding it opens a menu with mini games, quotes and a stopwatch.
 
 Built with an ESP32-C3 Super Mini, a 128x64 I2C OLED, a 250 mAh LiPo and a TP4056 charger.
 
 ## Features
 
-- **10 animated faces**: happy, sleepy, surprised, in love, wink, shy, crying, angry, starry, kitty. They blink at random, bounce, blush, cry, twitch their ears and more.
+- **16 animated faces**: happy, sleepy, surprised, in love, wink, shy, crying, angry, starry, kitty, dizzy, smug, nervous, kiss, cool, panda. They blink at random, bounce, blush, cry, twitch their ears, spin their eyes and more.
 - **One-button controls**: tap for the next face, hold for the menu.
-- **Mochi Run**: a one-button runner game. Hop over thorns, catch hearts for +10. The high score is saved.
-- **Reaction game**: wait for the eyes to pop open, then tap. Your best time is saved.
-- **Fortune orb**: think of a yes/no question and tap for an answer.
-- **Remembers** the last face and best scores after power off.
+- **Mochi Run**: hop over thorns, catch hearts for +10.
+- **Float**: tap to flap and glide through the gaps between pillars.
+- **Stack**: drop the sliding block onto the tower. Overhangs get cut off, and perfect drops keep the full width.
+- **Reaction**: wait for the eyes to pop open, then tap as fast as you can.
+- **Quotes**: short motivational quotes, including one by Engineer Armish Rehan.
+- **Stopwatch**: keeps running in the background while you use other modes.
+- **Remembers** the last face and every game's best score after power off.
 - **Auto-nap**: after 5 minutes without a press, the screen turns off and the ESP32 goes into deep sleep. Press the button to wake it.
 - **Power saving**: 80 MHz CPU, Wi-Fi/Bluetooth off, low OLED contrast.
 
@@ -22,10 +25,13 @@ Built with an ESP32-C3 Super Mini, a 128x64 I2C OLED, a 250 mAh LiPo and a TP405
 | Faces | Next face | Open menu |
 | Menu | Next item | Choose |
 | Mochi Run | Jump | Back to menu |
+| Float | Flap | Back to menu |
+| Stack | Drop the block | Back to menu |
 | Reaction | Start / react | Back to menu |
-| Fortune | Ask the orb | Back to menu |
+| Quotes | Next quote | Back to menu |
+| Stopwatch | Start / pause | Paused: reset. Otherwise: back to menu |
 
-The menu goes back to the faces by itself after 15 seconds without a press.
+The menu goes back to the faces by itself after 15 seconds without a press. The keychain doesn't nap while the stopwatch is running.
 
 ## Components
 
@@ -181,6 +187,9 @@ All settings are at the top of `KawaiiKeychain.ino`:
 | `SAVE_LAST_FACE` | `1` | Remember the face after power off |
 | `AUTO_SLEEP_MINUTES` | `5` | Nap after this many idle minutes (`0` = never) |
 | `DEBUG_SERIAL` | `1` | Serial Monitor messages. Set to `0` for the finished keychain |
+| `ARMISH_REHAN_QUOTE` | `""` | Engineer Armish Rehan's quote for the Quotes screen. Skipped while empty |
+
+The other quotes are in the `QUOTES` list in the sketch. Add or change lines there; each quote has its text and an author.
 
 ### Screen driver
 

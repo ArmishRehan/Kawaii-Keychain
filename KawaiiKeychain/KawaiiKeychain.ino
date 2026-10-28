@@ -10,13 +10,16 @@
     Button   -> GPIO 3 and GND (use two DIAGONAL legs of a 4-pin button)
 
   What it does:
-    - Shows 10 animated kawaii faces (they blink, bounce, blush...)
+    - Shows 16 animated kawaii faces (they blink, bounce, blush...)
     - Tap the button   -> next face (after the last one it goes back to the first)
-    - Hold the button  -> menu: Faces / Mochi Run / Reaction / Fortune
+    - Hold the button  -> menu: Faces / Mochi Run / Float / Stack / Reaction / Quotes / Stopwatch
         Menu:      tap = next item, hold = choose
         Mochi Run: tap = jump over the thorns, catch hearts for +10. Hold = back to menu
+        Float:     tap = flap, glide through the gaps. Hold = menu
+        Stack:     tap = drop the sliding block on the tower. Hold = menu
         Reaction:  wait for the eyes to pop open, then tap as fast as you can. Hold = menu
-        Fortune:   think of a question, tap for an answer. Hold = menu
+        Quotes:    tap = next quote. Hold = menu
+        Stopwatch: tap = start/pause, hold while paused = reset, otherwise hold = menu
     - Remembers the last face and your best scores, even after you switch it off
     - After AUTO_SLEEP_MINUTES without a press it takes a nap (screen off,
       tiny power use). Press the button to wake it up.
@@ -48,6 +51,10 @@
 #define SAVE_LAST_FACE      1     // 1 = remember the face after power off, 0 = always start with the first face
 #define AUTO_SLEEP_MINUTES  5     // nap after this many minutes without a press (0 = never nap)
 #define DEBUG_SERIAL        1     // 1 = print messages to the Serial Monitor (set to 0 for the final keychain)
+
+// Engineer Armish Rehan's quote for the Quotes screen - paste it between the quote marks.
+// While it's empty, it's simply skipped.
+#define ARMISH_REHAN_QUOTE  "Zarmeen is \"pickme\""
 // ===========================================================
 
 #define SCREEN_W 128
@@ -71,10 +78,12 @@
 Preferences prefs;                                         // saves the face number and best scores in flash
 
 // The faces, in the order the button steps through them
-enum { HAPPY, SLEEPY, SURPRISED, LOVE, WINK, SHY, CRYING, ANGRY, STARRY, KITTY, FACE_COUNT };
+enum { HAPPY, SLEEPY, SURPRISED, LOVE, WINK, SHY, CRYING, ANGRY, STARRY, KITTY,
+       DIZZY, SMUG, NERVOUS, KISS, COOL, PANDA, FACE_COUNT };
 const char* const FACE_NAMES[FACE_COUNT] = {
   "happy", "sleepy", "surprised", "in love", "wink",
-  "shy", "crying", "angry", "starry", "kitty"
+  "shy", "crying", "angry", "starry", "kitty",
+  "dizzy", "smug", "nervous", "kiss", "cool", "panda"
 };
 
 // Where the face parts sit on the screen (before any bounce/shake)
@@ -108,17 +117,21 @@ bool longFired = false;            // true once the current press counted as a l
 enum { BTN_NONE, BTN_DOWN, BTN_TAP, BTN_LONG };
 
 // Which screen we're on
-enum { MODE_FACES, MODE_MENU, MODE_RUNNER, MODE_REACTION, MODE_FORTUNE };
+enum { MODE_FACES, MODE_MENU, MODE_RUNNER, MODE_FLOAT, MODE_STACK, MODE_REACTION, MODE_QUOTES, MODE_STOPWATCH };
 int mode = MODE_FACES;
 
 // Menu
-const int MENU_COUNT = 4;
-const char* const MENU_ITEMS[MENU_COUNT] = { "Faces", "Mochi Run", "Reaction", "Fortune" };
+const int MENU_COUNT = 7;
+const char* const MENU_ITEMS[MENU_COUNT] = {
+  "Faces", "Mochi Run", "Float", "Stack", "Reaction", "Quotes", "Stopwatch"
+};
 int menuIndex = 0;
 unsigned long menuAt = 0;          // last press in the menu (it closes itself after a while)
 
+// Game states (shared by all the games)
+enum { GAME_READY, GAME_PLAYING, GAME_OVER };
+
 // Mochi Run (the runner game)
-enum { RUN_READY, RUN_PLAYING, RUN_OVER };
 const int GROUND_Y = 55;           // y of the ground line
 const int BLOB_X = 18, BLOB_R = 6; // where the player stands and how big it is
 const float GRAVITY = 0.00049f;    // pixels per ms per ms
@@ -127,7 +140,7 @@ struct Obstacle { float x; int w, h; bool active; };
 struct Pickup { float x; int y; bool active; };
 Obstacle obs[3];
 Pickup heart;
-int runState = RUN_READY;
+int runState = GAME_READY;
 unsigned long runStateAt = 0;      // when the current game state began
 unsigned long heartPopAt = 0;      // when a heart was last caught (shows "+10")
 float blobY = 0, blobV = 0;        // height above the ground and upward speed
@@ -144,15 +157,55 @@ int rxState = RX_INTRO;
 unsigned long rxAt = 0, rxGoAt = 0, rxTime = 0;
 uint16_t rxBest = 0;               // 0 = no best time yet
 
-// Fortune orb
-enum { FT_IDLE, FT_SHAKE, FT_SHOW };
-const int FORTUNE_COUNT = 10;
-const char* const FORTUNES[FORTUNE_COUNT] = {
-  "yes!", "nope~", "maybe", "ask later", "totally!",
-  "hmm...", "you got this", "snack first", "go for it", "not today"
+// Float (tap to flap through the gaps)
+const int FLOAT_X = 26;            // where the player flies
+const int COL_W = 12, GAP_H = 28;  // pillar width and the size of the gap
+const float FLOAT_GRAVITY = 0.00035f, FLAP_V = -0.11f;
+struct Column { float x; int gapY; bool passed, active; };
+Column cols[3];
+int flState = GAME_READY, flScore = 0, flLastGap = 20;
+unsigned long flStateAt = 0, flFlapAt = 0;
+float flY = 28, flV = 0;
+uint16_t flBest = 0;
+bool flNewBest = false;
+
+// Stack (drop the sliding block on the tower)
+const int STACK_H = 5;             // pixels per layer (4 px block + 1 px gap)
+const int STACK_BASE_Y = 59;       // top of the bottom block
+const int STACK_START_W = 48;
+int stState = GAME_READY, stLevel = 0;
+int stTopX = 0, stTopW = STACK_START_W;   // the block on top of the tower
+int stXs[16], stWs[16];                   // the last 16 layers, for drawing
+float stX = 0, stDir = 1;                 // the sliding block
+float cutX = 0, cutY = 0, cutV = 0;       // the piece that got cut off and falls away
+int cutW = 0;
+bool cutActive = false;
+unsigned long stStateAt = 0, stPerfectAt = 0;
+uint16_t stBest = 0;
+bool stNewBest = false;
+
+// Quotes
+struct Quote { const char* text; const char* author; };
+const Quote QUOTES[] = {
+  { ARMISH_REHAN_QUOTE,                       "Engr. Armish Rehan" },
+  { "Small steps still move you forward.",    "mochi" },
+  { "Be soft. Be brave. Be you.",             "mochi" },
+  { "Every bug you fix makes you stronger.",  "mochi" },
+  { "Rest is part of the work.",              "mochi" },
+  { "You are doing better than you think.",   "mochi" },
+  { "Stay curious, stay kind.",               "mochi" },
+  { "Debug your day: one problem at a time.", "mochi" },
+  { "Even tiny lights glow in the dark.",     "mochi" },
+  { "Drink water. Then conquer the world.",   "mochi" },
+  { "Done with love beats done perfectly.",   "mochi" },
 };
-int ftState = FT_IDLE, ftAnswer = 0;
-unsigned long ftAt = 0;
+const int QUOTE_COUNT = sizeof(QUOTES) / sizeof(QUOTES[0]);
+int quoteIndex = 0;
+char qLines[6][22];                // the current quote, word-wrapped into lines
+
+// Stopwatch
+bool swRunning = false;
+unsigned long swStartAt = 0, swElapsed = 0;   // swElapsed = time banked before the last start
 
 
 // ---------------------------------------------------------------
@@ -447,6 +500,126 @@ void faceKitty(unsigned long t, float open) {
 }
 
 
+// A spiral eye that spins (for dizzy)
+void drawSpiralEye(int cx, int cy, unsigned long t) {
+  float spin = (t % 1000) * TWO_PI / 1000;
+  int px = cx, py = cy;
+  for (int a = 30; a <= 720; a += 30) {   // two turns, getting wider
+    float r = a / 720.0f * 8;
+    float ang = a * DEG_TO_RAD + spin;
+    int x = cx + (int)lroundf(r * cosf(ang));
+    int y = cy + (int)lroundf(r * sinf(ang));
+    display.drawLine(px, py, x, y, WHITE);
+    px = x;
+    py = y;
+  }
+}
+
+// 10. Dizzy - spinning spiral eyes, wobbly mouth, stars circling the head
+void faceDizzy(unsigned long t) {
+  drawSpiralEye(pos.lx, pos.ey, t);
+  drawSpiralEye(pos.rx, pos.ey, t);
+  for (int x = -7; x <= 7; x++) {
+    int y = (int)lroundf(2 * sinf(x * 0.8f + (t % 2000) * TWO_PI / 2000));
+    display.fillRect(pos.mx + x, pos.my + y, 1, 2, WHITE);
+  }
+  for (int i = 0; i < 3; i++) {
+    float a = (t % 1500) * TWO_PI / 1500 + i * TWO_PI / 3;
+    drawSparkle(64 + pos.ox + (int)(34 * cosf(a)), 7 + (int)(4 * sinf(a)), 2, WHITE);
+  }
+}
+
+// A half-closed "heh" eye: heavy lid with the eye peeking out underneath
+void drawSmugEye(int cx, int cy, float open) {
+  if (open > 0.3f) {
+    display.fillCircle(cx + 3, cy + 1, 4, WHITE);
+    display.fillRect(cx - 2, cy - 4, 10, 3, BLACK);   // cut off the top
+  }
+  display.fillRect(cx - 8, cy - 1, 17, 2, WHITE);     // the lid
+}
+
+// 11. Smug - half-lidded eyes, one eyebrow up, side smirk
+void faceSmug(unsigned long t, float open) {
+  drawBlush(5);
+  drawSmugEye(pos.lx, pos.ey, open);
+  drawSmugEye(pos.rx, pos.ey, open);
+  drawArc(pos.rx, pos.ey - 4, 9, 220, 320, 1, WHITE);   // raised eyebrow
+  drawArc(pos.mx + 4, pos.my - 6, 8, 30, 110, 2, WHITE);
+}
+
+// 12. Nervous - shivering eyes, worried brows, zig-zag mouth, sweat drops
+void faceNervous(unsigned long t, float open) {
+  int jit = ((t / 80) % 2) ? 1 : -1;
+  drawRoundEye(pos.lx + jit, pos.ey + 1, 5, 6, open);
+  drawRoundEye(pos.rx + jit, pos.ey + 1, 5, 6, open);
+  display.drawLine(pos.lx - 8, pos.ey - 8, pos.lx + 5, pos.ey - 12, WHITE);   // inner ends up = worried
+  display.drawLine(pos.rx + 8, pos.ey - 8, pos.rx - 5, pos.ey - 12, WHITE);
+  for (int x = -8; x < 8; x += 4) {
+    display.drawLine(pos.mx + x, pos.my, pos.mx + x + 2, pos.my - 2, WHITE);
+    display.drawLine(pos.mx + x + 2, pos.my - 2, pos.mx + x + 4, pos.my, WHITE);
+  }
+  fillDrop(108 + pos.ox, 14 + pos.oy + (t % 1200) / 150, 3);
+  fillDrop(18 + pos.ox, 20 + pos.oy + ((t + 600) % 1200) / 150, 2);
+}
+
+// 13. Kiss - one eye closed, "3" lips, little hearts drifting away
+void faceKiss(unsigned long t, float open) {
+  drawBlush(7);
+  drawHappyEye(pos.lx, pos.ey);
+  drawRoundEye(pos.rx, pos.ey, 6, 8, open);
+  drawArc(pos.mx - 2, pos.my - 4, 3, 270, 450, 2, WHITE);
+  drawArc(pos.mx - 2, pos.my + 2, 3, 270, 450, 2, WHITE);
+  for (int i = 0; i < 2; i++) {
+    unsigned long ph = (t + i * 900) % 1800;
+    fillHeart(pos.mx + 10 + ph / 60, pos.my - 4 - ph / 70, ph < 900 ? 1 : 2);
+  }
+}
+
+// 14. Cool - sunglasses with a shine sweeping across, relaxed smirk
+void faceCool(unsigned long t) {
+  display.fillRoundRect(pos.lx - 12, pos.ey - 6, 24, 13, 4, WHITE);
+  display.fillRoundRect(pos.rx - 12, pos.ey - 6, 24, 13, 4, WHITE);
+  display.drawLine(pos.lx + 12, pos.ey - 3, pos.rx - 12, pos.ey - 3, WHITE);   // bridge
+  display.drawLine(pos.lx - 12, pos.ey - 4, pos.lx - 22, pos.ey - 7, WHITE);   // arms
+  display.drawLine(pos.rx + 12, pos.ey - 4, pos.rx + 22, pos.ey - 7, WHITE);
+  unsigned long ph = t % 3000;
+  if (ph < 600) {   // the shine: two black streaks gliding over the lenses
+    int sx = pos.lx - 20 + (int)(ph * (pos.rx - pos.lx + 40) / 600);
+    for (int k = 0; k < 2; k++) {
+      display.drawLine(sx + k * 4, pos.ey + 7, sx + k * 4 + 8, pos.ey - 7, BLACK);
+    }
+  }
+  drawArc(pos.mx + 3, pos.my - 6, 8, 30, 110, 2, WHITE);
+}
+
+// A panda eye: a big patch with a small shiny eye inside (lit pixels are the "dark" fur)
+void drawPandaEye(int cx, int cy, float open) {
+  fillEllipse(cx, cy + 1, 9, 7, WHITE);
+  if (open < 0.2f) {
+    display.fillRect(cx - 3, cy, 7, 2, BLACK);
+    return;
+  }
+  fillEllipse(cx, cy, 3, max(1, (int)(3 * open + 0.5f)), BLACK);
+  if (open > 0.6f) display.drawPixel(cx + 1, cy - 1, WHITE);
+}
+
+// 15. Panda - round ears, eye patches, munching every few seconds
+void facePanda(unsigned long t, float open) {
+  display.fillCircle(pos.ox + 12, pos.oy + 4, 9, WHITE);
+  display.fillCircle(pos.ox + 116, pos.oy + 4, 9, WHITE);
+  drawPandaEye(pos.lx + 2, pos.ey + 2, open);
+  drawPandaEye(pos.rx - 2, pos.ey + 2, open);
+  display.fillTriangle(pos.mx - 4, pos.my - 8, pos.mx + 4, pos.my - 8, pos.mx, pos.my - 4, WHITE);   // nose
+  bool chew = (t % 4000 < 1500) && ((t / 200) % 2);   // munch munch
+  if (chew) {
+    display.drawCircle(pos.mx, pos.my, 2, WHITE);
+  } else {
+    drawArc(pos.mx - 4, pos.my - 4, 4, 0, 180, 2, WHITE);
+    drawArc(pos.mx + 4, pos.my - 4, 4, 0, 180, 2, WHITE);
+  }
+}
+
+
 // ---------------------------------------------------------------
 //  Animation timing
 // ---------------------------------------------------------------
@@ -487,6 +660,10 @@ void updateMotion(unsigned long t) {
     case CRYING: oy = (t / 150) % 2;                 break;   // little sobbing hiccups
     case ANGRY:  ox = random(-1, 2);                 break;   // trembling with rage
     case LOVE:   oy = lroundf(2 * wave(t, 1000, 0)); break;   // excited, faster bounce
+    case DIZZY:  ox = lroundf(3 * wave(t, 1600, 0));          // woozy swaying
+                 oy = lroundf(wave(t, 800, 0));      break;
+    case NERVOUS: ox = (t / 120) % 2;                break;   // can't keep still
+    case COOL:   oy = (t / 400) % 2;                 break;   // nodding along to music
     default:     oy = lroundf(2 * wave(t, 1800, 0)); break;   // gentle idle bounce
   }
   unsigned long since = t - faceChangedAt;
@@ -520,6 +697,12 @@ void drawFrame(unsigned long t) {
     case ANGRY:     faceAngry(t, open);     break;
     case STARRY:    faceStarry(t, open);    break;
     case KITTY:     faceKitty(t, open);     break;
+    case DIZZY:     faceDizzy(t);           break;
+    case SMUG:      faceSmug(t, open);      break;
+    case NERVOUS:   faceNervous(t, open);   break;
+    case KISS:      faceKiss(t, open);      break;
+    case COOL:      faceCool(t);            break;
+    case PANDA:     facePanda(t, open);     break;
   }
   if (t - faceChangedAt < 900) drawLabel(FACE_NAMES[currentFace]);
   display.display();   // send the finished picture to the OLED
@@ -551,8 +734,11 @@ void startFaces(unsigned long now) {
 }
 
 void startRunner(unsigned long now);
+void startFloat(unsigned long now);
+void startStack(unsigned long now);
 void startReaction(unsigned long now);
-void startFortune(unsigned long now);
+void startQuotes(unsigned long now);
+void startStopwatch(unsigned long now);
 
 void menuInput(int ev, unsigned long now) {
   if (ev == BTN_TAP) {
@@ -560,10 +746,13 @@ void menuInput(int ev, unsigned long now) {
     menuAt = now;
   } else if (ev == BTN_LONG) {
     switch (menuIndex) {
-      case 0: startFaces(now);    break;
-      case 1: startRunner(now);   break;
-      case 2: startReaction(now); break;
-      case 3: startFortune(now);  break;
+      case 0: startFaces(now);     break;
+      case 1: startRunner(now);    break;
+      case 2: startFloat(now);     break;
+      case 3: startStack(now);     break;
+      case 4: startReaction(now);  break;
+      case 5: startQuotes(now);    break;
+      case 6: startStopwatch(now); break;
     }
   } else if (now - menuAt > 15000) {
     startFaces(now);   // nobody's choosing - go back to the faces
@@ -571,19 +760,27 @@ void menuInput(int ev, unsigned long now) {
 }
 
 void menuDraw() {
+  const int ROWS = 4;   // how many items fit on the screen at once
+  int first = constrain(menuIndex - 1, 0, MENU_COUNT - ROWS);   // scroll so the choice stays visible
   display.clearDisplay();
   drawCentered("tap:next hold:ok", 0, 1);
-  for (int i = 0; i < MENU_COUNT; i++) {
-    int y = 14 + i * 12;
+  for (int r = 0; r < ROWS; r++) {
+    int i = first + r;
+    int y = 14 + r * 12;
     if (i == menuIndex) {   // highlighted item: white bar with black text
-      display.fillRoundRect(10, y - 2, 108, 12, 3, WHITE);
+      display.fillRoundRect(6, y - 2, 110, 12, 3, WHITE);
       display.setTextColor(BLACK);
     } else {
       display.setTextColor(WHITE);
     }
     display.setTextSize(1);
-    display.setCursor(20, y);
+    display.setCursor(16, y);
     display.print(MENU_ITEMS[i]);
+  }
+  for (int i = 0; i < MENU_COUNT; i++) {   // little dots on the right show where you are
+    int y = 14 + i * 6;
+    if (i == menuIndex) display.fillCircle(123, y, 2, WHITE);
+    else display.drawPixel(123, y, WHITE);
   }
   display.display();
 }
@@ -607,7 +804,7 @@ void runnerReset(unsigned long now) {
 
 void startRunner(unsigned long now) {
   mode = MODE_RUNNER;
-  runState = RUN_READY;
+  runState = GAME_READY;
   runnerReset(now);
   lastFrameAt = 0;
 }
@@ -636,19 +833,23 @@ void spawnObstacle() {
   nextSpawnIn = 10;   // all slots busy, try again soon
 }
 
-// Does the blob (circle) touch obstacle i? The thorns count as a slightly
+// Does a circle touch a box? (used for collisions in the games)
+bool circleHitsRect(float cx, float cy, float r, float left, float top, float right, float bottom) {
+  float nx = constrain(cx, left, right);
+  float ny = constrain(cy, top, bottom);
+  float dx = cx - nx, dy = cy - ny;
+  return dx * dx + dy * dy < r * r;
+}
+
+// Does the blob touch obstacle i? The thorns count as a slightly
 // smaller box than they look, so near-misses feel fair.
 bool blobHits(int cx, int cy, int i) {
-  float left = obs[i].x + 2, right = obs[i].x + obs[i].w - 2;
-  float top = GROUND_Y - obs[i].h + 3, bottom = GROUND_Y;
-  float nx = constrain((float)cx, left, right);
-  float ny = constrain((float)cy, top, bottom);
-  float dx = cx - nx, dy = cy - ny;
-  return dx * dx + dy * dy < (BLOB_R - 1) * (BLOB_R - 1);
+  return circleHitsRect(cx, cy, BLOB_R - 1, obs[i].x + 2, GROUND_Y - obs[i].h + 3,
+                        obs[i].x + obs[i].w - 2, GROUND_Y);
 }
 
 void runnerGameOver(unsigned long now) {
-  runState = RUN_OVER;
+  runState = GAME_OVER;
   runStateAt = now;
   newBest = runScore() > runBest;
   if (newBest) {
@@ -660,19 +861,19 @@ void runnerGameOver(unsigned long now) {
 void runnerInput(int ev, unsigned long now) {
   if (ev == BTN_LONG) { openMenu(now); return; }
   if (ev != BTN_DOWN) return;
-  if (runState == RUN_READY) {
-    runState = RUN_PLAYING;
+  if (runState == GAME_READY) {
+    runState = GAME_PLAYING;
     runnerReset(now);
-  } else if (runState == RUN_PLAYING) {
+  } else if (runState == GAME_PLAYING) {
     if (blobY < 1.0f) blobV = JUMP_V;   // only hop when standing on the ground
   } else if (now - runStateAt > 700) {  // short pause after crashing so you don't restart by accident
-    runState = RUN_PLAYING;
+    runState = GAME_PLAYING;
     runnerReset(now);
   }
 }
 
 void runnerUpdate(unsigned long dt, unsigned long now) {
-  if (runState != RUN_PLAYING) return;
+  if (runState != GAME_PLAYING) return;
 
   speed = min(0.06f + (now - runStateAt) / 1000.0f * 0.002f, 0.15f);   // slowly speeds up
   float step = speed * dt;
@@ -755,7 +956,7 @@ void drawCloud(int x, int y) {
 void runnerDraw(unsigned long now) {
   display.clearDisplay();
 
-  if (runState == RUN_PLAYING) {
+  if (runState == GAME_PLAYING) {
     drawCloud((int)cloudX[0], 14);
     drawCloud((int)cloudX[1], 22);
   }
@@ -774,9 +975,9 @@ void runnerDraw(unsigned long now) {
 
   int cy = GROUND_Y - BLOB_R - (int)blobY;
   int mood = 0;
-  if (runState == RUN_OVER) mood = 2;
+  if (runState == GAME_OVER) mood = 2;
   else if (blobY > 0) mood = 1;
-  else if (runState == RUN_PLAYING) cy -= ((int)(distance / 6)) % 2;   // tiny running bob
+  else if (runState == GAME_PLAYING) cy -= ((int)(distance / 6)) % 2;   // tiny running bob
   else cy -= (wave(now, 1200, 0) > 0) ? 1 : 0;                        // idle bounce
   drawBlob(BLOB_X, cy, mood);
 
@@ -787,7 +988,7 @@ void runnerDraw(unsigned long now) {
   display.setCursor(0, 0);
   display.print(buf);
 
-  if (runState == RUN_READY) {
+  if (runState == GAME_READY) {
     drawCentered("MOCHI RUN", 16, 1);
     drawCentered("tap to start", 30, 1);
   } else {
@@ -795,7 +996,7 @@ void runnerDraw(unsigned long now) {
     display.setCursor(SCREEN_W - (int)strlen(buf) * 6, 0);
     display.print(buf);
   }
-  if (runState == RUN_OVER) {
+  if (runState == GAME_OVER) {
     drawCentered("oops!", 14, 2);
     if (newBest && (now / 300) % 2) drawCentered("NEW BEST!", 36, 1);
   }
@@ -882,62 +1083,395 @@ void reactionDraw(unsigned long now) {
 }
 
 
+// Score line shared by the games: best on the left, current score on the right
+void drawScores(uint16_t best, int score, bool showScore) {
+  char buf[12];
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  snprintf(buf, sizeof buf, "HI %u", best);
+  display.setCursor(0, 0);
+  display.print(buf);
+  if (showScore) {
+    snprintf(buf, sizeof buf, "%d", score);
+    display.setCursor(SCREEN_W - (int)strlen(buf) * 6, 0);
+    display.print(buf);
+  }
+}
+
+// The "oops!" screen shared by the games (on a black box so it's readable over the playfield)
+void drawGameOver(bool best, unsigned long now) {
+  display.fillRect(28, 11, 72, 34, BLACK);
+  drawCentered("oops!", 14, 2);
+  if (best && (now / 300) % 2) drawCentered("NEW BEST!", 34, 1);
+}
+
+
 // ---------------------------------------------------------------
-//  Fortune orb - think of a yes/no question and tap
+//  Float - tap to flap, glide through the gaps between the pillars
 // ---------------------------------------------------------------
 
-void startFortune(unsigned long now) {
-  mode = MODE_FORTUNE;
-  ftState = FT_IDLE;
-  ftAt = now;
+void floatReset(unsigned long now) {
+  flY = 28;
+  flV = 0;
+  flScore = 0;
+  flLastGap = 18;
+  for (int i = 0; i < 3; i++) cols[i].active = false;
+  flStateAt = now;
+}
+
+void startFloat(unsigned long now) {
+  mode = MODE_FLOAT;
+  flState = GAME_READY;
+  floatReset(now);
   lastFrameAt = 0;
 }
 
-void fortuneInput(int ev, unsigned long now) {
+void floatGameOver(unsigned long now) {
+  flState = GAME_OVER;
+  flStateAt = now;
+  flNewBest = flScore > flBest;
+  if (flNewBest) {
+    flBest = flScore;
+    prefs.putUShort("flBest", flBest);
+  }
+}
+
+void spawnColumn() {
+  for (int i = 0; i < 3; i++) {
+    if (cols[i].active) continue;
+    // the gap moves at most 20 px from the last one, so it's always reachable
+    flLastGap = constrain(flLastGap + (int)random(-20, 21), 6, SCREEN_H - GAP_H - 6);
+    cols[i].x = SCREEN_W + 2;
+    cols[i].gapY = flLastGap;
+    cols[i].passed = false;
+    cols[i].active = true;
+    return;
+  }
+}
+
+void floatInput(int ev, unsigned long now) {
   if (ev == BTN_LONG) { openMenu(now); return; }
-  if (ev == BTN_DOWN && ftState != FT_SHAKE) {
-    ftState = FT_SHAKE;
-    ftAt = now;
+  if (ev != BTN_DOWN) return;
+  if (flState == GAME_OVER && now - flStateAt <= 700) return;   // short pause after crashing
+  if (flState != GAME_PLAYING) {
+    flState = GAME_PLAYING;
+    floatReset(now);
   }
+  flV = FLAP_V;
+  flFlapAt = now;
 }
 
-// The orb on its little stand. awake = eyes open and smiling
-void drawOrb(int cx, int cy, bool awake) {
-  display.drawCircle(cx, cy, 16, WHITE);
-  display.drawCircle(cx, cy, 15, WHITE);
-  display.fillRoundRect(cx - 12, cy + 16, 25, 5, 2, WHITE);
-  drawArc(cx, cy, 12, 200, 250, 1, WHITE);   // shine
-  if (awake) {
-    display.fillCircle(cx - 5, cy - 1, 2, WHITE);
-    display.fillCircle(cx + 5, cy - 1, 2, WHITE);
-    drawArc(cx, cy + 2, 4, 30, 150, 1, WHITE);
-  } else {
-    drawArc(cx - 5, cy - 3, 3, 20, 160, 1, WHITE);
-    drawArc(cx + 5, cy - 3, 3, 20, 160, 1, WHITE);
+void floatUpdate(unsigned long dt, unsigned long now) {
+  if (flState != GAME_PLAYING) return;
+
+  flV += FLOAT_GRAVITY * dt;
+  flY += flV * dt;
+  if (flY < BLOB_R) { flY = BLOB_R; flV = 0; }                  // bump the ceiling gently
+  if (flY > SCREEN_H - BLOB_R) { floatGameOver(now); return; }   // fell to the ground
+
+  float step = min(0.045f + flScore * 0.001f, 0.08f) * dt;       // a little faster every pillar
+  float rightmost = -100;
+  for (int i = 0; i < 3; i++) {
+    if (!cols[i].active) continue;
+    cols[i].x -= step;
+    if (!cols[i].passed && cols[i].x + COL_W < FLOAT_X) {
+      cols[i].passed = true;
+      flScore++;
+    }
+    if (cols[i].x + COL_W < 0) {
+      cols[i].active = false;
+      continue;
+    }
+    rightmost = max(rightmost, cols[i].x);
+    float x = cols[i].x;
+    if (circleHitsRect(FLOAT_X, flY, BLOB_R - 1, x, -10, x + COL_W, cols[i].gapY) ||
+        circleHitsRect(FLOAT_X, flY, BLOB_R - 1, x, cols[i].gapY + GAP_H, x + COL_W, SCREEN_H + 10)) {
+      floatGameOver(now);
+      return;
+    }
   }
+  if (rightmost < SCREEN_W - 58) spawnColumn();
 }
 
-void fortuneDraw(unsigned long now) {
-  if (ftState == FT_SHAKE && now - ftAt > 800) {
-    int pick;
-    do { pick = random(FORTUNE_COUNT); } while (pick == ftAnswer);   // never the same answer twice in a row
-    ftAnswer = pick;
-    ftState = FT_SHOW;
-    ftAt = now;
-  }
+void floatDraw(unsigned long now) {
   display.clearDisplay();
-  if (ftState == FT_SHAKE) {
-    drawOrb(64 + random(-2, 3), 22 + random(-1, 2), false);
-    for (int i = 0; i < 3; i++) drawSparkle(random(20, 108), random(4, 40), random(1, 4), WHITE);
-    drawCentered("thinking...", 50, 1);
-  } else if (ftState == FT_SHOW) {
-    drawOrb(64, 22, true);
-    const char* a = FORTUNES[ftAnswer];
-    drawCentered(a, strlen(a) <= 10 ? 46 : 50, strlen(a) <= 10 ? 2 : 1);
-  } else {
-    drawOrb(64, 22 + (wave(now, 2000, 0) > 0 ? 1 : 0), false);
-    drawCentered("think, then tap", 50, 1);
+  for (int i = 0; i < 3; i++) {
+    if (!cols[i].active) continue;
+    int x = (int)cols[i].x, g = cols[i].gapY;
+    display.drawRoundRect(x, -4, COL_W, g + 4, 3, WHITE);
+    display.drawRoundRect(x, g + GAP_H, COL_W, SCREEN_H - g - GAP_H + 4, 3, WHITE);
+    for (int y = 3; y < SCREEN_H; y += 6) {   // dotted pattern inside the pillars
+      if (y < g - 2 || y > g + GAP_H + 2) display.drawPixel(x + 3 + (y / 6 % 2) * 5, y, WHITE);
+    }
   }
+
+  int cy = (int)flY;
+  if (flState == GAME_READY) cy += (wave(now, 1200, 0) > 0) ? 1 : 0;
+  bool flap = now - flFlapAt < 150;
+  int wingY = flap ? cy - 5 : cy + 3;   // wings up right after a flap
+  display.drawTriangle(FLOAT_X - 6, cy - 1, FLOAT_X - 6, cy + 2, FLOAT_X - 11, wingY, WHITE);
+  display.drawTriangle(FLOAT_X + 6, cy - 1, FLOAT_X + 6, cy + 2, FLOAT_X + 11, wingY, WHITE);
+  drawBlob(FLOAT_X, cy, flState == GAME_OVER ? 2 : (flap ? 1 : 0));
+
+  drawScores(flBest, flScore, flState != GAME_READY);
+  if (flState == GAME_READY) {
+    drawCentered("FLOAT", 16, 1);
+    drawCentered("tap to flap", 30, 1);
+  }
+  if (flState == GAME_OVER) drawGameOver(flNewBest, now);
+  display.display();
+}
+
+
+// ---------------------------------------------------------------
+//  Stack - tap to drop the sliding block. Overhangs get cut off.
+// ---------------------------------------------------------------
+
+void stackReset(unsigned long now) {
+  stLevel = 0;
+  stTopW = STACK_START_W;
+  stTopX = (SCREEN_W - STACK_START_W) / 2;
+  stXs[0] = stTopX;
+  stWs[0] = stTopW;
+  stX = 0;
+  stDir = 1;
+  cutActive = false;
+  stStateAt = now;
+}
+
+void startStack(unsigned long now) {
+  mode = MODE_STACK;
+  stState = GAME_READY;
+  stackReset(now);
+  lastFrameAt = 0;
+}
+
+// How far the tower has scrolled down, so the top always stays on screen
+int stackCam() {
+  return max(0, (stLevel + 1) * STACK_H - 30);
+}
+
+int layerY(int level) {
+  return STACK_BASE_Y - level * STACK_H + stackCam();
+}
+
+void stackGameOver(unsigned long now) {
+  stState = GAME_OVER;
+  stStateAt = now;
+  stNewBest = stLevel > stBest;
+  if (stNewBest) {
+    stBest = stLevel;
+    prefs.putUShort("stBest", stBest);
+  }
+}
+
+void stackDrop(unsigned long now) {
+  int mx = (int)lroundf(stX);
+  int left = max(mx, stTopX);
+  int right = min(mx + stTopW, stTopX + stTopW);
+
+  if (abs(mx - stTopX) <= 1) {          // close enough: a perfect drop, nothing is lost
+    left = stTopX;
+    right = stTopX + stTopW;
+    stPerfectAt = now;
+  } else if (right <= left) {           // missed the tower completely
+    cutX = mx;
+    cutW = stTopW;
+    cutY = layerY(stLevel + 1);
+    cutV = 0;
+    cutActive = true;
+    stackGameOver(now);
+    return;
+  } else {                              // the overhanging part breaks off and falls
+    cutW = stTopW - (right - left);
+    cutX = (mx < left) ? mx : right;
+    cutY = layerY(stLevel + 1);
+    cutV = 0;
+    cutActive = true;
+  }
+
+  stLevel++;
+  stTopX = left;
+  stTopW = right - left;
+  stXs[stLevel % 16] = stTopX;
+  stWs[stLevel % 16] = stTopW;
+  stDir = (stLevel % 2) ? -1 : 1;       // the next block comes from the other side
+  stX = (stDir > 0) ? 0 : SCREEN_W - stTopW;
+}
+
+void stackInput(int ev, unsigned long now) {
+  if (ev == BTN_LONG) { openMenu(now); return; }
+  if (ev != BTN_DOWN) return;
+  if (stState == GAME_PLAYING) {
+    stackDrop(now);
+  } else if (stState == GAME_READY || now - stStateAt > 700) {
+    stState = GAME_PLAYING;
+    stackReset(now);
+  }
+}
+
+void stackUpdate(unsigned long dt, unsigned long now) {
+  if (cutActive) {
+    cutV += 0.0005f * dt;
+    cutY += cutV * dt;
+    if (cutY > SCREEN_H) cutActive = false;
+  }
+  if (stState != GAME_PLAYING) return;
+  float sp = min(0.05f + stLevel * 0.004f, 0.14f);   // slides faster as the tower grows
+  stX += stDir * sp * dt;
+  if (stX <= 0) { stX = 0; stDir = 1; }
+  if (stX >= SCREEN_W - stTopW) { stX = SCREEN_W - stTopW; stDir = -1; }
+}
+
+void stackDraw(unsigned long now) {
+  display.clearDisplay();
+  for (int lv = max(0, stLevel - 15); lv <= stLevel; lv++) {
+    int y = layerY(lv);
+    if (y < SCREEN_H) display.fillRect(stXs[lv % 16], y, stWs[lv % 16], STACK_H - 1, WHITE);
+  }
+  if (stState == GAME_PLAYING) {        // the sliding block, with a tiny face
+    int x = (int)lroundf(stX), y = layerY(stLevel + 1);
+    display.fillRect(x, y, stTopW, STACK_H - 1, WHITE);
+    if (stTopW >= 8) {
+      display.drawPixel(x + stTopW / 2 - 2, y + 1, BLACK);
+      display.drawPixel(x + stTopW / 2 + 2, y + 1, BLACK);
+    }
+  }
+  if (cutActive) display.drawRect((int)cutX, (int)cutY, cutW, STACK_H - 1, WHITE);
+
+  drawScores(stBest, stLevel, stState != GAME_READY);
+  if (now - stPerfectAt < 600) drawCentered("perfect!", 12, 1);
+  if (stState == GAME_READY) {
+    drawCentered("STACK", 14, 1);
+    drawCentered("tap to drop", 26, 1);
+  }
+  if (stState == GAME_OVER) drawGameOver(stNewBest, now);
+  display.display();
+}
+
+
+// ---------------------------------------------------------------
+//  Quotes - tap for the next one
+// ---------------------------------------------------------------
+
+// Splits text into lines of at most `width` letters, breaking at spaces.
+// The lines go into qLines; returns how many there are.
+int wrapText(const char* text, int width) {
+  int n = 0;
+  const char* p = text;
+  while (*p && n < 6) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+    int take = strlen(p);
+    if (take > width) {
+      take = width;
+      while (take > 0 && p[take] != ' ') take--;   // back up to the last space
+      if (take == 0) take = width;                 // one very long word: just cut it
+    }
+    memcpy(qLines[n], p, take);
+    qLines[n][take] = 0;
+    n++;
+    p += take;
+  }
+  return n;
+}
+
+void nextQuote() {
+  do {
+    quoteIndex = (quoteIndex + 1) % QUOTE_COUNT;
+  } while (QUOTES[quoteIndex].text[0] == 0);   // skip empty ones
+}
+
+void startQuotes(unsigned long now) {
+  mode = MODE_QUOTES;
+  if (QUOTES[quoteIndex].text[0] == 0) nextQuote();
+  lastFrameAt = 0;
+}
+
+void quotesInput(int ev, unsigned long now) {
+  if (ev == BTN_LONG) openMenu(now);
+  else if (ev == BTN_TAP) nextQuote();
+}
+
+void quotesDraw(unsigned long now) {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  display.print('"');
+  int sz = lroundf(1.5f + 1.5f * wave(now, 1500, 0));
+  if (sz > 0) drawSparkle(121, 5, sz, WHITE);
+
+  int n = wrapText(QUOTES[quoteIndex].text, 20);
+  int y = 8 + (40 - n * 10) / 2;              // centre the lines in the space above the author
+  for (int i = 0; i < n; i++) drawCentered(qLines[i], y + i * 10, 1);
+
+  char by[32];
+  snprintf(by, sizeof by, "- %s", QUOTES[quoteIndex].author);
+  display.setTextSize(1);
+  display.setCursor(SCREEN_W - (int)strlen(by) * 6 - 2, 55);
+  display.print(by);
+  display.display();
+}
+
+
+// ---------------------------------------------------------------
+//  Stopwatch - tap = start/pause, hold while paused = reset
+// ---------------------------------------------------------------
+
+unsigned long swTime(unsigned long now) {
+  return swElapsed + (swRunning ? now - swStartAt : 0);
+}
+
+void startStopwatch(unsigned long now) {
+  mode = MODE_STOPWATCH;
+  lastFrameAt = 0;
+}
+
+void stopwatchInput(int ev, unsigned long now) {
+  if (ev == BTN_TAP) {
+    if (swRunning) {
+      swElapsed += now - swStartAt;
+      swRunning = false;
+    } else {
+      swStartAt = now;
+      swRunning = true;
+    }
+  } else if (ev == BTN_LONG) {
+    if (!swRunning && swElapsed > 0) swElapsed = 0;   // paused: hold to reset
+    else openMenu(now);                               // a running stopwatch keeps going in the background
+  }
+}
+
+void stopwatchDraw(unsigned long now) {
+  unsigned long ms = swTime(now);
+  unsigned long h = ms / 3600000UL, m = (ms / 60000UL) % 60, s = (ms / 1000UL) % 60, tenth = (ms / 100UL) % 10;
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  display.print("stopwatch");
+  drawBlob(118, 7 - ((swRunning && (now / 150) % 2) ? 1 : 0), swRunning ? 1 : 0);
+
+  bool show = swRunning || ms == 0 || (now % 1000) < 700;   // paused: the time blinks
+  char buf[12];
+  if (show) {
+    if (h > 0) {
+      snprintf(buf, sizeof buf, "%lu:%02lu:%02lu", h, m, s);
+      drawCentered(buf, 22, 2);
+    } else {
+      snprintf(buf, sizeof buf, "%02lu:%02lu", m, s);
+      display.setTextSize(3);
+      display.setCursor(7, 18);
+      display.print(buf);
+      snprintf(buf, sizeof buf, ".%lu", tenth);
+      display.setTextSize(2);
+      display.setCursor(97, 26);
+      display.print(buf);
+    }
+  }
+  const char* hint = swRunning ? "tap:pause hold:menu" : (ms > 0 ? "tap:go hold:reset" : "tap:start hold:menu");
+  drawCentered(hint, 56, 1);
   display.display();
 }
 
@@ -1043,6 +1577,8 @@ void setup() {
   prefs.begin("keychain", false);
   runBest = prefs.getUShort("runBest", 0);
   rxBest = prefs.getUShort("rxBest", 0);
+  flBest = prefs.getUShort("flBest", 0);
+  stBest = prefs.getUShort("stBest", 0);
 #if SAVE_LAST_FACE
   currentFace = prefs.getUChar("face", HAPPY);
   if (currentFace >= FACE_COUNT) currentFace = HAPPY;
@@ -1078,11 +1614,15 @@ void loop() {
       break;
     case MODE_MENU:     menuInput(ev, now);     break;
     case MODE_RUNNER:   runnerInput(ev, now);   break;
-    case MODE_REACTION: reactionInput(ev, now); break;
-    case MODE_FORTUNE:  fortuneInput(ev, now);  break;
+    case MODE_FLOAT:     floatInput(ev, now);     break;
+    case MODE_STACK:     stackInput(ev, now);     break;
+    case MODE_REACTION:  reactionInput(ev, now);  break;
+    case MODE_QUOTES:    quotesInput(ev, now);    break;
+    case MODE_STOPWATCH: stopwatchInput(ev, now); break;
   }
 
-  unsigned long frameMs = (mode == MODE_RUNNER) ? GAME_FRAME_MS : FRAME_MS;
+  bool fastGame = (mode == MODE_RUNNER || mode == MODE_FLOAT || mode == MODE_STACK);
+  unsigned long frameMs = fastGame ? GAME_FRAME_MS : FRAME_MS;
   if (now - lastFrameAt >= frameMs) {               // time for a new frame?
     unsigned long dt = min(now - lastFrameAt, 60UL);  // cap it, so a slow frame can't teleport things
     lastFrameAt = now;
@@ -1090,13 +1630,17 @@ void loop() {
       case MODE_FACES:    drawFrame(now);  break;
       case MODE_MENU:     menuDraw();      break;
       case MODE_RUNNER:   runnerUpdate(dt, now); runnerDraw(now); break;
-      case MODE_REACTION: reactionDraw(now); break;
-      case MODE_FORTUNE:  fortuneDraw(now);  break;
+      case MODE_FLOAT:     floatUpdate(dt, now); floatDraw(now); break;
+      case MODE_STACK:     stackUpdate(dt, now); stackDraw(now); break;
+      case MODE_REACTION:  reactionDraw(now);  break;
+      case MODE_QUOTES:    quotesDraw(now);    break;
+      case MODE_STOPWATCH: stopwatchDraw(now); break;
     }
   }
 
 #if AUTO_SLEEP_MINUTES > 0
-  if (now - lastActivityAt >= AUTO_SLEEP_MINUTES * 60000UL) goToSleep();
+  // never nap while the stopwatch is running - deep sleep would lose the time
+  if (!swRunning && now - lastActivityAt >= AUTO_SLEEP_MINUTES * 60000UL) goToSleep();
 #endif
 
   delay(1);   // tiny rest so the CPU isn't spinning flat out
